@@ -34,4 +34,4 @@ export RUSTFLAGS="${add_rustflags[*]} ${RUSTFLAGS:-}"
 export MIRIFLAGS="${add_miriflags[*]} ${MIRIFLAGS:-}"
 
 # actually run miri
-cargo miri test --lib "${@}"
+cargo miri test "${@}"
