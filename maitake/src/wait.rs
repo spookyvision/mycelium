@@ -10,12 +10,14 @@
 pub(crate) mod cell;
 pub mod map;
 pub mod queue;
+pub(crate) mod wakeset;
 
 pub use self::cell::WaitCell;
 #[doc(inline)]
 pub use self::map::WaitMap;
 #[doc(inline)]
 pub use self::queue::WaitQueue;
+pub(crate) use self::wakeset::WakeSet;
 
 use core::task::Poll;
 

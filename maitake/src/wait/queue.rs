@@ -3,11 +3,11 @@ use crate::{
         cell::UnsafeCell,
         sync::{
             atomic::{AtomicUsize, Ordering::*},
-            spin::Mutex,
+            spin::{Mutex, MutexGuard},
         },
     },
     util,
-    wait::{self, WaitResult},
+    wait::{self, WaitResult, WakeSet},
 };
 use cordyceps::{
     list::{self, List},
@@ -432,14 +432,8 @@ impl WaitQueue {
             State::Waiting => {}
         }
 
-        // okay, we actually have to wake some stuff.
-
-        // TODO(eliza): wake outside the lock using an array, a la
-        // https://github.com/tokio-rs/tokio/blob/4941fbf7c43566a8f491c64af5a4cd627c99e5a6/tokio/src/sync/batch_semaphore.rs#L277-L303
-        while let Some(node) = queue.pop_back() {
-            let waker = Waiter::wake(node, &mut queue, Wakeup::All);
-            waker.wake()
-        }
+        let mut wakeset = WakeSet::new();
+        queue = self.drain_to_wakeset(&mut wakeset, queue, Wakeup::All);
 
         // now that the queue has been drained, transition to the empty state,
         // and increment the wake_all count.
@@ -448,6 +442,10 @@ impl WaitQueue {
             .with(QueueState::WAKE_ALLS, state.get(QueueState::WAKE_ALLS) + 1);
         self.compare_exchange(state, next_state)
             .expect("state should not have transitioned while locked");
+
+        // wake any tasks that were woken in the last iteration of the wakeset loop.
+        drop(queue);
+        wakeset.wake_all();
     }
 
     /// Close the queue, indicating that it may no longer be used.
@@ -465,14 +463,11 @@ impl WaitQueue {
             return;
         }
 
-        let mut queue = self.queue.lock();
+        let mut wakeset = WakeSet::new();
+        self.drain_to_wakeset(&mut wakeset, self.queue.lock(), Wakeup::Closed);
 
-        // TODO(eliza): wake outside the lock using an array, a la
-        // https://github.com/tokio-rs/tokio/blob/4941fbf7c43566a8f491c64af5a4cd627c99e5a6/tokio/src/sync/batch_semaphore.rs#L277-L303
-        while let Some(node) = queue.pop_back() {
-            let waker = Waiter::wake(node, &mut queue, Wakeup::Closed);
-            waker.wake()
-        }
+        // wake any tasks that were woken in the last iteration of the wakeset loop.
+        wakeset.wake_all();
     }
 
     /// Wait to be woken up by this queue.
@@ -589,6 +584,40 @@ impl WaitQueue {
         }
 
         Some(waker)
+    }
+
+    /// Drain the queue of all waiters, and push them to `wakeset`.
+    ///
+    /// When the [`WakeSet`] is full, this function drops the lock, wakes the
+    /// current contents of the [`WakeSet`] before reacquiring the lock and
+    /// continuing.
+    ///
+    /// Note that this will *not* wake the final batch of waiters added to the
+    /// wakeset. Instead, it returns the [`MutexGuard`], in case additional
+    /// operations must be performed with the lock held before waking the final
+    /// batch of waiters.
+    fn drain_to_wakeset<'q>(
+        &'q self,
+        wakeset: &mut WakeSet,
+        mut queue: MutexGuard<'q, List<Waiter>>,
+        wakeup: Wakeup,
+    ) -> MutexGuard<'q, List<Waiter>> {
+        while let Some(node) = queue.pop_back() {
+            let waker = Waiter::wake(node, &mut queue, wakeup.clone());
+            if wakeset.add_waker(waker) {
+                // there's still room in the wake set, just keep adding to it.
+                continue;
+            }
+
+            // wake set is full, drop the lock and wake everyone!
+            drop(queue);
+            wakeset.wake_all();
+
+            // reacquire the lock and continue waking
+            queue = self.queue.lock();
+        }
+
+        queue
     }
 }
 
