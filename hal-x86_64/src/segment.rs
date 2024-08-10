@@ -1,10 +1,12 @@
-/// x86 memory segmentation structures.
-use crate::{cpu, task};
 use core::{arch::asm, mem};
+
 use mycelium_util::{
     bits::{self, Pack64, Packing64, Pair64},
     fmt,
 };
+
+/// x86 memory segmentation structures.
+use crate::{cpu, task};
 
 bits::bitfield! {
     /// A segment selector.
@@ -240,7 +242,7 @@ impl Selector {
             "lea {retaddr}, [1f + rip]",
             "push {retaddr}",
             "retfq",
-            "1:",
+            "2:",
             selector = in(reg) self.0 as u64,
             retaddr = lateout(reg) _,
             options(preserves_flags),
@@ -600,9 +602,11 @@ mod base {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::mem::size_of;
+
     use proptest::prelude::*;
+
+    use super::*;
 
     #[test]
     fn prettyprint() {
